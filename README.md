@@ -46,26 +46,24 @@ The system streamlines hostel operations with features for students, admins, and
 
 ## 📂 Project Structure
 
-```
-hostel-management/
+```hostel-site/
+hostel-site/
+├── hostel-website-backend/   # Django backend (API, auth, DB)
+│   ├── hostel_app/           # Core hostel logic
+│   ├── hostel_mgmt/          # Django project settings
+│   ├── manage.py             # Django entrypoint
+│   └── requirements.txt      # Python dependencies
 │
-├── backend/              # Django REST API
-│   ├── api/              # DRF apps (rooms, allocations, outpasses, issues, announcements)
-│   ├── settings.py       # Django settings
-│   └── ...
-│
-├── frontend/             # Next.js client
-│   ├── components/       # Reusable UI components
-│   │   ├── student-dashboard-content.tsx
-│   │   ├── outpass-list.tsx
-│   │   ├── issue-list.tsx
-│   │   └── announcement-list.tsx
-│   ├── lib/api.ts        # Axios instance with interceptors
-│   └── pages/            # Next.js pages
-│       ├── student/      # Student routes (/dashboard, /outpass, /issues, /announcements)
-│       └── admin/        # Admin/Warden routes
+├── hostel-website-frontend/  # Next.js frontend (student/admin portal)
+│   ├── app/                  # Next.js routes
+│   ├── components/           # Reusable UI components
+│   ├── hooks/                # Custom React hooks
+│   ├── lib/                  # API and utility functions
+│   ├── public/               # Static assets
+│   └── styles/               # Global styles
 │
 └── README.md
+
 ```
 
 ---
