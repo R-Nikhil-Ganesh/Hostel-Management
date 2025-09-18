@@ -5,7 +5,8 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.db.models import Q
 
-from .models import UserProfile, Room, Allocation, Complaint, Outpass, Announcement
+from .models import (UserProfile, Room, Allocation, Complaint, Outpass, Announcement,
+FeeStructure, StudentFeeAccount, StudentCharge, Payment, StudentRegistry)
 
 User = get_user_model()
 
@@ -263,3 +264,89 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         if prof:
             return obj.read_by.filter(id=prof.id).exists()
         return False
+
+class FeeStructureSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FeeStructure
+        fields = "__all__"
+        read_only_fields = ["created_at"]
+
+
+
+class StudentChargeSerializer(serializers.ModelSerializer):
+    student_email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentCharge
+        fields = ["id", "student", "student_email", "allocation", "description", "amount", "due_date", "status", "created_at", "paid_at"]
+        read_only_fields = ["created_at", "paid_at", "status"]
+
+    def get_student_email(self, obj):
+        return getattr(getattr(obj, "student", None), "user", None).email if getattr(obj, "student", None) else None
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payment
+        fields = ["id", "student", "charge", "amount", "method", "transaction_id", "created_at"]
+        read_only_fields = ["created_at"]
+
+
+class StudentFeeAccountSerializer(serializers.ModelSerializer):
+    total_paid = serializers.IntegerField(read_only=True)
+    total_due = serializers.IntegerField(read_only=True)
+    overdue_count = serializers.IntegerField(read_only=True)
+    last_payment = serializers.DateTimeField(read_only=True)
+    current_room = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentFeeAccount
+        fields = [
+            "id", "email", "userprofile", "created_at",
+            "total_paid", "total_due", "overdue_count", "last_payment", "current_room",
+        ]
+        read_only_fields = ["created_at"]
+
+    def get_current_room(self, obj):
+        return obj.current_room()
+    
+class StudentSerializer(serializers.ModelSerializer):
+    fee_status = serializers.SerializerMethodField()
+    current_room = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "email", "fee_status", "current_room"]
+
+    def get_fee_status(self, obj):
+        profile = getattr(obj, "userprofile", None)
+        return profile.fee_status if profile else None
+
+    def get_current_room(self, obj):
+        profile = getattr(obj, "userprofile", None)
+        if not profile:
+            return None
+        alloc = Allocation.objects.filter(student=profile, end_date__isnull=True).select_related("room").first()
+        return alloc.room.room_number if alloc and alloc.room else None
+
+class StudentCreateSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    fee_status = serializers.ChoiceField(choices=["paid", "pending", "overdue"], default="pending")
+
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+
+    def create(self, validated_data):
+        email = validated_data["email"]
+        fee_status = validated_data.get("fee_status", "pending")
+
+        # Create User
+        user = User.objects.create_user(username=email, email=email)
+        user.save()
+
+        # Create UserProfile
+        profile = UserProfile.objects.create(user=user, role="student", fee_status=fee_status)
+
+        return user

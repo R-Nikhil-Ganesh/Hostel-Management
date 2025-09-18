@@ -6,7 +6,7 @@ import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Home, Building2, FileText, AlertCircle, Megaphone, Settings, LogOut, Menu, X } from "lucide-react"
+import { Home, Building2, FileText, AlertCircle, Megaphone, Settings, LogOut, Menu, CreditCard, X, Users } from "lucide-react"
 
 interface User {
   email: string
@@ -24,6 +24,7 @@ const navigationItems = {
     { icon: Home, label: "Dashboard", href: "/student/dashboard" },
     { icon: Building2, label: "My Room", href: "/student/room" },
     { icon: FileText, label: "Outpass", href: "/student/outpass" },
+    { icon: CreditCard, label: "Fee Payment", href: "/student/fees" },
     { icon: AlertCircle, label: "Issues", href: "/student/issues" },
     { icon: Megaphone, label: "Announcements", href: "/student/announcements" },
   ],
@@ -37,7 +38,9 @@ const navigationItems = {
   admin: [
     { icon: Home, label: "Dashboard", href: "/admin/dashboard" },
     { icon: Building2, label: "Room Management", href: "/admin/rooms" },
+    { icon: Users, label: "Student Management", href: "/admin/student-management" },
     { icon: FileText, label: "Reports", href: "/admin/reports" },
+    { icon: CreditCard, label: "Fee Management", href: "/admin/fees" },
     { icon: AlertCircle, label: "System Issues", href: "/admin/issues" },
     { icon: Megaphone, label: "Announcements", href: "/admin/announcements" },
   ],

@@ -14,6 +14,12 @@ ROLE_CHOICES = [
     ('admin', 'Admin'),
 ]
 
+FEE_STATUS_CHOICES = [
+    ("paid", "Paid"),
+    ("pending", "Pending"),
+    ("overdue", "Overdue"),
+]
+
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='student')
@@ -27,6 +33,14 @@ class UserProfile(models.Model):
     room_announcements = models.BooleanField(default=True)
     maintenance_alerts = models.BooleanField(default=True)
     email_notifications = models.BooleanField(default=True)
+
+    fee_status = models.CharField(
+        max_length=10,
+        choices=FEE_STATUS_CHOICES,
+        default="pending",
+        help_text="Current fee payment status"
+    )
+
 
     def __str__(self):
         return f"{self.user.username} ({self.role})"
@@ -189,3 +203,140 @@ class Announcement(models.Model):
 
     def __str__(self):
         return self.title
+
+class AllowedStudent(models.Model):
+    email = models.EmailField(unique=True)
+    invited_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.email
+
+class FeeStructure(models.Model):
+    """
+    Canonical fee types that can be applied.
+    """
+    TYPE_CHOICES = [
+        ("hostel", "Hostel Fee"),
+        ("mess", "Mess Fee"),
+        ("security", "Security Deposit"),
+        ("other", "Other"),
+    ]
+
+    name = models.CharField(max_length=100)   # e.g. "Hostel Fee (Semester)"
+    fee_type = models.CharField(max_length=32, choices=TYPE_CHOICES, default="other")
+    amount = models.PositiveIntegerField()    # store in rupees (integer)
+    frequency = models.CharField(max_length=32, help_text="monthly/semester/one-time")
+    due_description = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.name} — ₹{self.amount}"
+
+
+class StudentFeeAccount(models.Model):
+    """
+    Per-student account. We support linking to a UserProfile when the user exists,
+    but keep `email` as primary identifier for registry-only students.
+    """
+    userprofile = models.ForeignKey(UserProfile, null=True, blank=True, on_delete=models.SET_NULL, related_name="fee_accounts")
+    email = models.EmailField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("userprofile", "email")
+
+    def __str__(self):
+        return self.email
+
+    @property
+    def total_paid(self):
+        return self.payments.aggregate(total=models.Sum("amount"))["total"] or 0
+
+    @property
+    def total_due(self):
+        # sum of all unpaid charges
+        return self.charges.filter(is_paid=False).aggregate(total=models.Sum("amount"))["total"] or 0
+
+    @property
+    def overdue_count(self):
+        today = timezone.now().date()
+        return self.charges.filter(is_paid=False, due_date__lt=today).count()
+
+    @property
+    def last_payment(self):
+        p = self.payments.order_by("-paid_at").first()
+        return p.paid_at if p else None
+
+    def current_room(self):
+        # try linked profile allocations first
+        if self.userprofile:
+            alloc = self.userprofile.allocations.filter(end_date__isnull=True).order_by("-start_date").first()
+            return getattr(alloc.room, "room_number", None)
+        return None
+
+
+class StudentCharge(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("paid", "Paid"),
+    ]
+
+    student = models.ForeignKey("UserProfile", on_delete=models.CASCADE, related_name="charges")
+    allocation = models.ForeignKey("Allocation", on_delete=models.SET_NULL, null=True, blank=True, related_name="charges")
+    description = models.CharField(max_length=255, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    due_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    created_at = models.DateTimeField(auto_now_add=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def mark_paid(self, when=None):
+        self.status = "paid"
+        self.paid_at = when or timezone.now()
+        self.save(update_fields=["status", "paid_at"])
+
+    def __str__(self):
+        return f"Charge {self.id} — {self.student} — {self.amount}"
+
+
+class Payment(models.Model):
+    student = models.ForeignKey("UserProfile", on_delete=models.CASCADE, related_name="payments")
+    charge = models.ForeignKey(StudentCharge, on_delete=models.CASCADE, related_name="payments")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=50, blank=True)  # optional: UPI/Cash/etc
+    transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_by = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL)
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # mark charge paid when payment >= charge.amount (simple rule)
+        try:
+            if self.amount >= self.charge.amount:
+                self.charge.mark_paid()
+        except Exception:
+            pass
+
+    def __str__(self):
+        return f"Payment {self.id} — {self.student} — {self.amount}"
+    
+class StudentRegistry(models.Model):
+    FEE_STATUS_CHOICES = [
+        ("paid", "Paid"),
+        ("pending", "Pending"),
+        ("overdue", "Overdue"),
+    ]
+
+    email = models.EmailField(unique=True)
+    room_number = models.CharField(max_length=20, blank=True, null=True)
+    fee_status = models.CharField(max_length=10, choices=FEE_STATUS_CHOICES, default="pending")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.email

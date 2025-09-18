@@ -1,17 +1,20 @@
 from django.utils import timezone
 from django.contrib.auth import get_user_model, update_session_auth_hash
-from rest_framework import viewsets, permissions, decorators, response, status
+from rest_framework import viewsets, permissions, decorators, response, status, generics
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.decorators import api_view, permission_classes, action
 from django.http import JsonResponse
+from django.db.models import Sum, Count
 from django.views.decorators.csrf import csrf_exempt
 import json
 
-from .models import Room, Allocation, Complaint,  Outpass, Announcement, UserProfile
+from .models import Room, Allocation, Complaint,  Outpass, Announcement, UserProfile, FeeStructure, StudentFeeAccount, StudentCharge, Payment, StudentRegistry
 from .serializers import (
     UserSerializer, RoomSerializer, AllocationSerializer, ComplaintSerializer,
     OutpassSerializer, AnnouncementSerializer,
-    UserProfileSerializer, PasswordChangeSerializer, RoomDetailSerializer
+    UserProfileSerializer, PasswordChangeSerializer, RoomDetailSerializer,
+    FeeStructureSerializer, StudentFeeAccountSerializer, StudentChargeSerializer, PaymentSerializer, StudentSerializer, StudentCreateSerializer
 )
 from .permissions import IsAdmin, IsWarden, IsStudent, IsWardenOrAdmin
 
@@ -281,3 +284,118 @@ def mark_as_read(request, pk):
         return response({"message": "Marked as read"}, status=status.HTTP_200_OK)
 
     return response({"error": "No profile linked"}, status=status.HTTP_400_BAD_REQUEST)
+
+class FeeStructureViewSet(viewsets.ModelViewSet):
+    queryset = FeeStructure.objects.all().order_by("-created_at")
+    serializer_class = FeeStructureSerializer
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsWardenOrAdmin()]
+        return [IsAuthenticated()]
+
+
+class StudentFeeAccountViewSet(viewsets.ModelViewSet):
+    queryset = StudentFeeAccount.objects.all().order_by("email")
+    serializer_class = StudentFeeAccountSerializer
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [IsWardenOrAdmin()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        # Optionally allow students to view only their account
+        userprofile = getattr(self.request.user, "userprofile", None)
+        if userprofile and userprofile.role == "student":
+            return StudentFeeAccount.objects.filter(userprofile=userprofile)
+        return super().get_queryset()
+
+    @action(detail=True, methods=["get"])
+    def charges(self, request, pk=None):
+        acc = self.get_object()
+        qs = acc.charges.order_by("-due_date")
+        return Response(StudentChargeSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["get"])
+    def payments(self, request, pk=None):
+        acc = self.get_object()
+        qs = acc.payments.order_by("-paid_at")
+        return Response(PaymentSerializer(qs, many=True).data)
+
+
+class StudentChargeViewSet(viewsets.ModelViewSet):
+    queryset = StudentCharge.objects.all().select_related("student", "allocation")
+    serializer_class = StudentChargeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        prof = getattr(self.request.user, "userprofile", None)
+        if prof and prof.role == "student":
+            return StudentCharge.objects.filter(student=prof).order_by("-created_at")
+        # admin/warden: all
+        return super().get_queryset()
+
+
+class PaymentViewSet(viewsets.ModelViewSet):
+    queryset = Payment.objects.all().select_related("student", "charge")
+    serializer_class = PaymentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        # make sure student matches request.user if student posts payment
+        prof = getattr(self.request.user, "userprofile", None)
+        if prof and prof.role == "student":
+            serializer.save(student=prof)
+        else:
+            serializer.save()
+
+
+# Simple report endpoint
+@api_view(["GET"])
+@permission_classes([IsWardenOrAdmin])
+def fees_summary(request):
+    total_revenue = Payment.objects.aggregate(total=Sum("amount"))["total"] or 0
+    total_pending = StudentCharge.objects.filter(is_paid=False).aggregate(total=Sum("amount"))["total"] or 0
+    total_overdue = StudentCharge.objects.filter(is_paid=False, due_date__lt=timezone.now().date()).count()
+    total_students = StudentFeeAccount.objects.count()
+
+    summary = {
+        "total_revenue": total_revenue,
+        "total_pending": total_pending,
+        "total_overdue": total_overdue,
+        "total_students": total_students,
+    }
+    return Response(summary)
+
+# List all students
+class StudentListView(generics.ListAPIView):
+    queryset = User.objects.filter(userprofile__role="student")
+    serializer_class = StudentSerializer
+    permission_classes = [IsAdmin]
+
+# Create a student
+class StudentCreateView(generics.CreateAPIView):
+    serializer_class = StudentCreateSerializer
+    permission_classes = [IsAdmin]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(StudentSerializer(user).data, status=status.HTTP_201_CREATED)
+
+# Update fee_status
+class StudentUpdateView(generics.UpdateAPIView):
+    queryset = User.objects.filter(userprofile__role="student")
+    serializer_class = StudentSerializer
+    permission_classes = [IsAdmin]
+
+    def patch(self, request, *args, **kwargs):
+        user = self.get_object()
+        profile = getattr(user, "userprofile", None)
+        fee_status = request.data.get("fee_status")
+        if profile and fee_status in ["paid", "pending", "overdue"]:
+            profile.fee_status = fee_status
+            profile.save()
+        return Response(StudentSerializer(user).data)
