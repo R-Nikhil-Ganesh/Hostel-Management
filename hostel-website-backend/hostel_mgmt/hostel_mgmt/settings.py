@@ -44,7 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
 
     # Your apps
-    'hostel_app',
+    'hostel_app'
 ]
 
 MIDDLEWARE = [

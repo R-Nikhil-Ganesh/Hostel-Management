@@ -2,10 +2,9 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from django.core.exceptions import ValidationError
+from decimal import Decimal
 
 User = settings.AUTH_USER_MODEL
-
-from django.db import models
 
 # Choices for roles
 ROLE_CHOICES = [
@@ -49,10 +48,10 @@ class UserProfile(models.Model):
 
 class Room(models.Model):
     room_number = models.CharField(max_length=10, unique=True)
-    room_type = models.CharField(max_length=20)  # single / double
+    room_type = models.CharField(max_length=20, default='double')  # single / double
     block = models.CharField(max_length=20, default="A")
     floor = models.PositiveIntegerField(default=1)
-    monthly_rent = models.DecimalField(max_digits=8, decimal_places=2, default=0.00)
+    monthly_rent = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('0.00'))
 
     # facilities
     has_ac = models.BooleanField(default=False)
@@ -62,7 +61,7 @@ class Room(models.Model):
     has_balcony = models.BooleanField(default=False)
     has_attached_washroom = models.BooleanField(default=False)
 
-    capacity = models.PositiveIntegerField()
+    capacity = models.PositiveIntegerField(default=2)
     is_active = models.BooleanField(default=True)
     is_under_maintenance = models.BooleanField(default=False)
     maintenance_issue = models.TextField(blank=True, null=True)
@@ -165,13 +164,13 @@ class Outpass(models.Model):
     STATUS = [("Pending", "Pending"), ("Approved", "Approved"), ("Rejected", "Rejected")]
     student = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name="outpasses")
     reason = models.TextField()
-    from_date = models.DateField()
-    to_date = models.DateField()
-    description = models.TextField(blank=True)
+    from_date = models.DateField(default=timezone.now)
+    to_date = models.DateField(default=timezone.now)
+    description = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS, default="Pending")
-    applied_at = models.DateTimeField(auto_now_add=True)
+    applied_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     decided_at = models.DateTimeField(null=True, blank=True)
-    warden_comment = models.TextField(blank=True, default="")
+    warden_comment = models.TextField(blank=True, null=True, default="")
 
     def __str__(self):
         return f"Outpass {self.student} {self.from_date}→{self.to_date} [{self.status}]"
@@ -212,131 +211,3 @@ class AllowedStudent(models.Model):
     def __str__(self):
         return self.email
 
-class FeeStructure(models.Model):
-    """
-    Canonical fee types that can be applied.
-    """
-    TYPE_CHOICES = [
-        ("hostel", "Hostel Fee"),
-        ("mess", "Mess Fee"),
-        ("security", "Security Deposit"),
-        ("other", "Other"),
-    ]
-
-    name = models.CharField(max_length=100)   # e.g. "Hostel Fee (Semester)"
-    fee_type = models.CharField(max_length=32, choices=TYPE_CHOICES, default="other")
-    amount = models.PositiveIntegerField()    # store in rupees (integer)
-    frequency = models.CharField(max_length=32, help_text="monthly/semester/one-time")
-    due_description = models.CharField(max_length=200, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    is_active = models.BooleanField(default=True)
-
-    def __str__(self):
-        return f"{self.name} — ₹{self.amount}"
-
-
-class StudentFeeAccount(models.Model):
-    """
-    Per-student account. We support linking to a UserProfile when the user exists,
-    but keep `email` as primary identifier for registry-only students.
-    """
-    userprofile = models.ForeignKey(UserProfile, null=True, blank=True, on_delete=models.SET_NULL, related_name="fee_accounts")
-    email = models.EmailField(db_index=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("userprofile", "email")
-
-    def __str__(self):
-        return self.email
-
-    @property
-    def total_paid(self):
-        return self.payments.aggregate(total=models.Sum("amount"))["total"] or 0
-
-    @property
-    def total_due(self):
-        # sum of all unpaid charges
-        return self.charges.filter(is_paid=False).aggregate(total=models.Sum("amount"))["total"] or 0
-
-    @property
-    def overdue_count(self):
-        today = timezone.now().date()
-        return self.charges.filter(is_paid=False, due_date__lt=today).count()
-
-    @property
-    def last_payment(self):
-        p = self.payments.order_by("-paid_at").first()
-        return p.paid_at if p else None
-
-    def current_room(self):
-        # try linked profile allocations first
-        if self.userprofile:
-            alloc = self.userprofile.allocations.filter(end_date__isnull=True).order_by("-start_date").first()
-            return getattr(alloc.room, "room_number", None)
-        return None
-
-
-class StudentCharge(models.Model):
-    STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("paid", "Paid"),
-    ]
-
-    student = models.ForeignKey("UserProfile", on_delete=models.CASCADE, related_name="charges")
-    allocation = models.ForeignKey("Allocation", on_delete=models.SET_NULL, null=True, blank=True, related_name="charges")
-    description = models.CharField(max_length=255, blank=True)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    due_date = models.DateField(null=True, blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    created_at = models.DateTimeField(auto_now_add=True)
-    paid_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-    def mark_paid(self, when=None):
-        self.status = "paid"
-        self.paid_at = when or timezone.now()
-        self.save(update_fields=["status", "paid_at"])
-
-    def __str__(self):
-        return f"Charge {self.id} — {self.student} — {self.amount}"
-
-
-class Payment(models.Model):
-    student = models.ForeignKey("UserProfile", on_delete=models.CASCADE, related_name="payments")
-    charge = models.ForeignKey(StudentCharge, on_delete=models.CASCADE, related_name="payments")
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    method = models.CharField(max_length=50, blank=True)  # optional: UPI/Cash/etc
-    transaction_id = models.CharField(max_length=255, blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    processed_by = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL)
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        # mark charge paid when payment >= charge.amount (simple rule)
-        try:
-            if self.amount >= self.charge.amount:
-                self.charge.mark_paid()
-        except Exception:
-            pass
-
-    def __str__(self):
-        return f"Payment {self.id} — {self.student} — {self.amount}"
-    
-class StudentRegistry(models.Model):
-    FEE_STATUS_CHOICES = [
-        ("paid", "Paid"),
-        ("pending", "Pending"),
-        ("overdue", "Overdue"),
-    ]
-
-    email = models.EmailField(unique=True)
-    room_number = models.CharField(max_length=20, blank=True, null=True)
-    fee_status = models.CharField(max_length=10, choices=FEE_STATUS_CHOICES, default="pending")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return self.email

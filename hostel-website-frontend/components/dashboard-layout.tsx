@@ -33,6 +33,7 @@ const navigationItems = {
     { icon: Building2, label: "Rooms", href: "/warden/rooms" },
     { icon: FileText, label: "Outpass Requests", href: "/warden/outpass" },
     { icon: AlertCircle, label: "Student Issues", href: "/warden/issues" },
+    { icon: FileText, label: "Daily Attendance", href: "/warden/attendance" },
     { icon: Megaphone, label: "Announcements", href: "/warden/announcements" },
   ],
   admin: [

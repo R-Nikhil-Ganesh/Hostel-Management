@@ -279,7 +279,7 @@ export function AdminStudentsContent() {
                 <DialogTrigger asChild>
                   <Button disabled={saving}>
                     <Plus className="mr-2 h-4 w-4" />
-                    Add Email
+                    Add Student
                   </Button>
                 </DialogTrigger>
 
